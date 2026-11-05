@@ -5187,29 +5187,30 @@ count.Parent = main
 
 
 local list = Instance.new("ScrollingFrame")
-
-list.Position = UDim2.fromOffset(10,75)
-
-list.Size = UDim2.new(1,-20,1,-205)
-
+list.Name = "PlayerListScroll"
+list.Position = UDim2.fromOffset(10, 75)
+list.Size = UDim2.new(1, -20, 1, -205)
 list.BackgroundTransparency = 1
-
 list.BorderSizePixel = 0
-
-list.ScrollBarThickness = 5
-
+list.ScrollBarThickness = 6
+list.ScrollBarImageColor3 = Color3.fromRGB(80, 140, 220)
 list.AutomaticCanvasSize = Enum.AutomaticSize.Y
-
-list.CanvasSize = UDim2.new()
-
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.ScrollingDirection = Enum.ScrollingDirection.Y
+list.ElasticBehavior = Enum.ElasticBehavior.Always
+list.ClipsDescendants = true
 list.Parent = main
 
-
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, 2)
+listPadding.PaddingBottom = UDim.new(0, 8)
+listPadding.PaddingLeft = UDim.new(0, 2)
+listPadding.PaddingRight = UDim.new(0, 4)
+listPadding.Parent = list
 
 local layout = Instance.new("UIListLayout")
-
-layout.Padding = UDim.new(0,8)
-
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent = list
 
 
@@ -5315,16 +5316,30 @@ end
 
 
 local reload = button(
-
-    main,"RELOAD PLAYER LIST",
-
-    Color3.fromRGB(20,85,155),
-
-    UDim2.new(1,-24,0,27),
-
-    UDim2.new(0,12,1,-33)
-
+    main,
+    "RELOAD PLAYER LIST",
+    Color3.fromRGB(20, 85, 155),
+    UDim2.new(1, -24, 0, 27),
+    UDim2.new(0, 12, 1, -33)
 )
+
+-- RELOAD was missing a click handler before; force a full resync of the live player list.
+reload.MouseButton1Click:Connect(function()
+    count.Text = "PLAYER LIST | RELOADING..."
+    task.defer(function()
+        refresh()
+        local n = 0
+        for _ in pairs(Cards) do
+            n += 1
+        end
+        count.Text =
+            "ALL PLAYERS (NO TEAM FILTER) | "
+            .. n
+            .. " others / "
+            .. #Players:GetPlayers()
+            .. " total | RELOADED"
+    end)
+end)
 
 
 
@@ -5686,15 +5701,19 @@ espConnection = RunService.RenderStepped:Connect(function()
 
 
 
+                local displayName = plr.DisplayName or plr.Name or "?"
+                local userName = plr.Name or "?"
+                local nameText
+                if displayName ~= userName then
+                    nameText = displayName .. " (@" .. userName .. ")"
+                else
+                    nameText = "@" .. userName
+                end
                 data.label.Text =
-
-                    plr.DisplayName
-
-                    .." | "
-
-                    ..math.floor(dist)
-
-                    .." STUDS"
+                    nameText
+                    .. " | "
+                    .. math.floor(dist)
+                    .. " STUDS"
 
 
 
@@ -5809,246 +5828,228 @@ end))
 
 
 local function clear()
-
-
-
-    for _,v in ipairs(list:GetChildren()) do
-
-
-
+    for _, v in ipairs(list:GetChildren()) do
         if v:IsA("Frame") then
-
             v:Destroy()
-
         end
-
-
-
     end
-
-
-
-    Cards = {}
-
-
-
+    table.clear(Cards)
 end
 
+local function getPlayerDisplayText(plr)
+    local displayName = tostring(plr.DisplayName or plr.Name or "?")
+    local userName = tostring(plr.Name or "?")
+    return displayName, "@" .. userName
+end
 
+-- Collect every other player currently in the server.
+-- ALWAYS load every other player in the server.
+-- Do NOT filter by Team, Neutral, ally, enemy, or any team color.
+local function collectOtherPlayers()
+    local all = {}
+    local seen = {}
 
---==================================================
+    local function consider(plr)
+        if not plr then
+            return
+        end
+        if not plr:IsA("Player") then
+            return
+        end
+        if plr == LocalPlayer then
+            return
+        end
+        if plr.Parent ~= Players then
+            return
+        end
+        if seen[plr] or seen[plr.UserId] then
+            return
+        end
+        -- Explicitly ignore Team / TeamColor — include ally, enemy, neutral, no team.
+        seen[plr] = true
+        seen[plr.UserId] = true
+        table.insert(all, plr)
+    end
 
--- REFRESH PLAYER LIST
+    for _, plr in ipairs(Players:GetPlayers()) do
+        consider(plr)
+    end
+    for _, child in ipairs(Players:GetChildren()) do
+        consider(child)
+    end
 
---==================================================
+    table.sort(all, function(a, b)
+        local an = string.lower(tostring(a.DisplayName or a.Name or ""))
+        local bn = string.lower(tostring(b.DisplayName or b.Name or ""))
+        if an == bn then
+            return string.lower(tostring(a.Name or "")) < string.lower(tostring(b.Name or ""))
+        end
+        return an < bn
+    end)
+    return all
+end
 
-
+local function getTeamLabel(plr)
+    local ok, team = pcall(function()
+        return plr.Team
+    end)
+    if ok and team and typeof(team) == "Instance" then
+        return tostring(team.Name)
+    end
+    local ok2, teamColor = pcall(function()
+        return plr.TeamColor
+    end)
+    if ok2 and teamColor then
+        return "TeamColor: " .. tostring(teamColor.Name)
+    end
+    return "No Team"
+end
 
 local function refresh()
-
-
-
-    if not gui.Parent then return end
-
-
+    if not gui or not gui.Parent then
+        return
+    end
+    if not list or not list.Parent then
+        return
+    end
 
     clear()
 
-
-
-    local all = Players:GetPlayers()
-
-
+    local all = collectOtherPlayers()
+    local totalInServer = #Players:GetPlayers()
+    local othersCount = #all
 
     count.Text =
-
-        "PLAYER LIST | "
-
-        ..#all
-
-        .." PLAYERS | F1: START / STOP | F2: CHANGE PLAYER TP"
-
-
-
-    for _,plr in ipairs(all) do
-
-
-
-        if plr ~= LocalPlayer then
-
-
-
-            local card = Instance.new("Frame")
-
-
-
-            card.Size = UDim2.new(1,-8,0,85)
-
-            card.BackgroundColor3 = Color3.fromRGB(24,38,61)
-
-            card.BorderSizePixel = 0
-
-            card.Parent = list
-
-
-
-            Instance.new("UICorner",card).CornerRadius =
-
-                UDim.new(0,7)
-
-
-
-            -- PLAYER NAME
-
-
-
-            local name = Instance.new("TextLabel")
-
-
-
-            name.Position = UDim2.fromOffset(9,5)
-
-            name.Size = UDim2.new(1,-18,0,25)
-
-            name.BackgroundTransparency = 1
-
-            name.Text = plr.DisplayName
-
-            name.TextColor3 = Color3.new(1,1,1)
-
-            name.TextXAlignment = Enum.TextXAlignment.Left
-
-            name.Font = Enum.Font.GothamBold
-
-            name.TextSize = 14
-
-            name.Parent = card
-
-
-
-            -- ESP BUTTON
-
-
-
-            local esp = button(
-
-                card,
-
-                ESPTargets[plr] and "ESP ON" or "ESP OFF",
-
-
-
-                ESPTargets[plr]
-
-                    and Color3.fromRGB(35,140,75)
-
-                    or Color3.fromRGB(130,45,50),
-
-
-
-                UDim2.new(0.5,-7,0,27),
-
-                UDim2.new(0,7,0,48)
-
-            )
-
-
-
-            -- SELECT BUTTON
-
-
-
-            local selectedIndex = getSelectedIndex(plr)
-
-
-
-            local selectButton = button(
-
-                card,
-
-
-
-                selectedIndex
-
-                    and ("SELECTED "..selectedIndex)
-
-                    or "SELECT",
-
-
-
-                selectedIndex
-
-                    and (
-
-                        Target == plr
-
-                        and Color3.fromRGB(35,150,85)
-
-                        or Color3.fromRGB(55,120,210)
-
-                    )
-
-                    or Color3.fromRGB(20,85,155),
-
-
-
-                UDim2.new(0.5,-7,0,27),
-
-                UDim2.new(0.5,0,0,48)
-
-            )
-
-
-
-            esp.MouseButton1Click:Connect(function()
-
-
-
-                togglePlayerESP(plr)
-
-
-
-                refresh()
-
-
-
-            end)
-
-
-
-            selectButton.MouseButton1Click:Connect(function()
-
-
-
-                toggleSelection(plr)
-
-
-
-                refresh()
-
-
-
-            end)
-
-
-
-            Cards[plr] = card
-
-
-
-        end
-
-
-
+        "ALL PLAYERS (NO TEAM FILTER) | "
+        .. othersCount
+        .. " others / "
+        .. totalInServer
+        .. " total | F1 Follow | F2 Next | RELOAD"
+
+    for index, plr in ipairs(all) do
+        local card = Instance.new("Frame")
+        card.Name = "PlayerCard_" .. tostring(plr.UserId)
+        card.Size = UDim2.new(1, -8, 0, 100)
+        card.BackgroundColor3 = Color3.fromRGB(24, 38, 61)
+        card.BorderSizePixel = 0
+        card.LayoutOrder = index
+        card.Parent = list
+
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 7)
+
+        local displayName, atName = getPlayerDisplayText(plr)
+        local teamName = getTeamLabel(plr)
+
+        local name = Instance.new("TextLabel")
+        name.Name = "DisplayName"
+        name.Position = UDim2.fromOffset(9, 3)
+        name.Size = UDim2.new(1, -18, 0, 18)
+        name.BackgroundTransparency = 1
+        name.Text = displayName
+        name.TextColor3 = Color3.new(1, 1, 1)
+        name.TextXAlignment = Enum.TextXAlignment.Left
+        name.TextTruncate = Enum.TextTruncate.AtEnd
+        name.Font = Enum.Font.GothamBold
+        name.TextSize = 13
+        name.Parent = card
+
+        local userLabel = Instance.new("TextLabel")
+        userLabel.Name = "UserName"
+        userLabel.Position = UDim2.fromOffset(9, 19)
+        userLabel.Size = UDim2.new(1, -18, 0, 16)
+        userLabel.BackgroundTransparency = 1
+        userLabel.Text = atName
+        userLabel.TextColor3 = Color3.fromRGB(140, 185, 230)
+        userLabel.TextXAlignment = Enum.TextXAlignment.Left
+        userLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        userLabel.Font = Enum.Font.Gotham
+        userLabel.TextSize = 11
+        userLabel.Parent = card
+
+        local teamLabel = Instance.new("TextLabel")
+        teamLabel.Name = "TeamName"
+        teamLabel.Position = UDim2.fromOffset(9, 34)
+        teamLabel.Size = UDim2.new(1, -18, 0, 14)
+        teamLabel.BackgroundTransparency = 1
+        teamLabel.Text = "Team: " .. teamName
+        teamLabel.TextColor3 = Color3.fromRGB(255, 190, 90)
+        teamLabel.TextXAlignment = Enum.TextXAlignment.Left
+        teamLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        teamLabel.Font = Enum.Font.Gotham
+        teamLabel.TextSize = 10
+        teamLabel.Parent = card
+
+        local idLabel = Instance.new("TextLabel")
+        idLabel.Name = "UserId"
+        idLabel.Position = UDim2.fromOffset(9, 46)
+        idLabel.Size = UDim2.new(1, -18, 0, 12)
+        idLabel.BackgroundTransparency = 1
+        idLabel.Text = "ID: " .. tostring(plr.UserId)
+        idLabel.TextColor3 = Color3.fromRGB(110, 130, 155)
+        idLabel.TextXAlignment = Enum.TextXAlignment.Left
+        idLabel.Font = Enum.Font.Gotham
+        idLabel.TextSize = 10
+        idLabel.Parent = card
+
+        local esp = button(
+            card,
+            ESPTargets[plr] and "ESP ON" or "ESP OFF",
+            ESPTargets[plr]
+                and Color3.fromRGB(35, 140, 75)
+                or Color3.fromRGB(130, 45, 50),
+            UDim2.new(0.5, -7, 0, 24),
+            UDim2.new(0, 7, 1, -28)
+        )
+
+        local selectedIndex = getSelectedIndex(plr)
+
+        local selectButton = button(
+            card,
+            selectedIndex and ("SELECTED " .. selectedIndex) or "SELECT",
+            selectedIndex
+                and (
+                    Target == plr
+                    and Color3.fromRGB(35, 150, 85)
+                    or Color3.fromRGB(55, 120, 210)
+                )
+                or Color3.fromRGB(20, 85, 155),
+            UDim2.new(0.5, -7, 0, 24),
+            UDim2.new(0.5, 0, 1, -28)
+        )
+
+        -- Capture player by UserId so the button still works if the instance is refreshed.
+        local capturedPlayer = plr
+        local capturedUserId = plr.UserId
+
+        esp.MouseButton1Click:Connect(function()
+            local live = Players:GetPlayerByUserId(capturedUserId) or capturedPlayer
+            if live and live.Parent == Players then
+                togglePlayerESP(live)
+            end
+            refresh()
+        end)
+
+        selectButton.MouseButton1Click:Connect(function()
+            local live = Players:GetPlayerByUserId(capturedUserId) or capturedPlayer
+            if live and live.Parent == Players then
+                toggleSelection(live)
+            end
+            refresh()
+        end)
+
+        Cards[plr] = card
     end
 
-
-
+    -- Force canvas size so every card is reachable by scroll.
+    task.defer(function()
+        if list and list.Parent and layout then
+            local contentY = layout.AbsoluteContentSize.Y + 12
+            list.CanvasSize = UDim2.new(0, 0, 0, math.max(contentY, 0))
+        end
+    end)
 end
 
 
-
---==================================================
 
 -- ESP SYSTEM ON / OFF
 
@@ -6128,34 +6129,28 @@ end)
 
 
 
-table.insert(connections,Players.PlayerAdded:Connect(function(plr)
-
-
-
+table.insert(connections, Players.PlayerAdded:Connect(function(plr)
     plr.CharacterAdded:Connect(function()
-
-
-
-        task.wait(1)
-
-
-
+        task.wait(0.5)
         if ESPEnabled and ESPTargets[plr] then
-
             createESP(plr)
-
         end
-
-
-
+        if gui and gui.Parent then
+            refresh()
+        end
     end)
 
-
-
+    -- Multiple delayed refreshes so the list always catches late joins / name replication.
     refresh()
-
-
-
+    task.delay(0.25, function()
+        if gui and gui.Parent then refresh() end
+    end)
+    task.delay(1, function()
+        if gui and gui.Parent then refresh() end
+    end)
+    task.delay(2, function()
+        if gui and gui.Parent then refresh() end
+    end)
 end))
 
 
@@ -6660,16 +6655,15 @@ table.insert(connections,UIS.InputBegan:Connect(function(input,gameProcessed)
 
 
 
+        local dName = Target.DisplayName or Target.Name or "?"
+        local uName = Target.Name or "?"
         print(
-
             "CURRENT TP PLAYER: "
-
-            ..Target.DisplayName
-
-            .." | SELECTED "
-
-            ..CurrentIndex
-
+            .. dName
+            .. " (@"
+            .. uName
+            .. ") | SELECTED "
+            .. CurrentIndex
         )
 
 
@@ -6767,6 +6761,44 @@ updateESPButton()
 refresh()
 
 updateWindow()
+
+-- Keep player list fully in sync with the live server.
+task.spawn(function()
+    while gui and gui.Parent do
+        task.wait(2)
+        if not (gui and gui.Parent) then
+            break
+        end
+        local live = collectOtherPlayers()
+        local listedCount = 0
+        for _ in pairs(Cards) do
+            listedCount += 1
+        end
+        if #live ~= listedCount then
+            refresh()
+        else
+            -- Still verify every listed card belongs to a live player.
+            local missing = false
+            for plr in pairs(Cards) do
+                if not plr or plr.Parent ~= Players then
+                    missing = true
+                    break
+                end
+            end
+            if missing then
+                refresh()
+            end
+        end
+    end
+end)
+
+-- One more delayed full load after the module starts (covers players already in server).
+task.delay(0.3, function()
+    if gui and gui.Parent then refresh() end
+end)
+task.delay(1.5, function()
+    if gui and gui.Parent then refresh() end
+end)
 
 end -- isolated original script scope
 
